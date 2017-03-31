@@ -3932,7 +3932,7 @@ create_indicator_window (GtkScrolledWindow *scrolled_window,
   gtk_scrolled_window_allocate_scrollbar (scrolled_window, child, &allocation);
 
   window = gdk_window_new_child (priv->view_window,
-                                 gtk_widget_get_events (widget),
+                                 GDK_ALL_EVENTS_MASK,
                                  &allocation);
   gtk_widget_register_window (widget, window);
 
@@ -4194,10 +4194,7 @@ gtk_scrolled_window_realize (GtkWidget *widget)
   gtk_widget_get_allocation (widget, &allocation);
 
   priv->view_window = gdk_window_new_child (gtk_widget_get_parent_window (widget),
-                                            gtk_widget_get_events (widget)
-                                            | GDK_ENTER_NOTIFY_MASK
-                                            | GDK_LEAVE_NOTIFY_MASK
-                                            | GDK_POINTER_MOTION_MASK,
+                                            GDK_ALL_EVENTS_MASK,
                                             &allocation);
 
   gtk_widget_register_window (widget, priv->view_window);
