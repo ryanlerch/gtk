@@ -177,6 +177,12 @@ static const GDebugKey gtk_debug_keys[] = {
 };
 #endif /* G_ENABLE_DEBUG */
 
+#define POINT_IN_RECT(point_x, point_y, rect)    \
+  ((point_x) >= (rect)->x &&                     \
+   (point_x) < (rect)->x + (rect)->width &&      \
+   (point_y) >= (rect)->y &&                     \
+   (point_y) < (rect)->y + (rect)->height)
+
 /**
  * gtk_get_major_version:
  *
@@ -2303,4 +2309,86 @@ _gtk_propagate_captured_event (GtkWidget *widget,
                                GtkWidget *topmost)
 {
   return propagate_event (widget, event, TRUE, topmost);
+}
+
+static void
+transform_to_widget_coords (GtkWidget *widget,
+                            gdouble    x,
+                            gdouble    y,
+                            gdouble   *x_out,
+                            gdouble   *y_out)
+{
+  GdkWindow *window;
+  gdouble origin_x = 0, origin_y = 0;
+
+  /* XXX: This sucks on purpose, on one hand, when all child windows
+   * are removed this will boil down to comparisons between toplevel-
+   * relative coordinates.
+   *
+   * On the other hand, widgets might eventually get arbitrary
+   * transforms (even 3D) so this function should cater for correct
+   * picking and coordinate transformation for these circumstances.
+   */
+  window = _gtk_widget_get_window (widget);
+
+  while (window && gdk_window_get_window_type (window) == GDK_WINDOW_CHILD)
+    {
+      gdk_window_coords_to_parent (window, origin_x, origin_y,
+                                   &origin_x, &origin_y);
+      window = gdk_window_get_parent (window);
+    }
+
+  *x_out = x - origin_x;
+  *y_out = y - origin_y;
+}
+
+GtkWidget *
+_gtk_toplevel_pick (GtkWindow *toplevel,
+		    gdouble    x,
+		    gdouble    y,
+                    gdouble   *x_out,
+                    gdouble   *y_out)
+{
+  GQueue candidates = G_QUEUE_INIT;
+  GtkWidget *target;
+
+  g_queue_push_tail (&candidates, GTK_WIDGET (toplevel));
+  target = GTK_WIDGET (toplevel);
+
+  while (!g_queue_is_empty (&candidates))
+    {
+      GtkAllocation allocation, clip;
+      GtkWidget *child;
+
+      child = g_queue_pop_head (&candidates);
+
+      for (child = _gtk_widget_get_last_child (child);
+           child;
+           child = _gtk_widget_get_prev_sibling (child))
+        {
+          gdouble tx = x, ty = y;
+
+          if (!gtk_widget_is_sensitive (child) ||
+              !gtk_widget_is_drawable (child))
+            continue;
+
+          transform_to_widget_coords (child, tx, ty, &tx, &ty);
+          gtk_widget_get_clip (child, &clip);
+          _gtk_widget_get_allocation (child, &allocation);
+
+          if (POINT_IN_RECT (tx, ty, &clip))
+            g_queue_push_tail (&candidates, child);
+
+          if (POINT_IN_RECT (tx, ty, &allocation))
+            {
+              target = child;
+              break;
+            }
+        }
+    }
+
+  if (x_out && y_out)
+    transform_to_widget_coords (target, x, y, x_out, y_out);
+
+  return target;
 }
