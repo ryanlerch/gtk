@@ -5572,7 +5572,7 @@ gtk_widget_size_allocate (GtkWidget	*widget,
  *   @widget_b or %NULL if @widget_a and @widget_b do not
  *   share a common ancestor.
  **/
-static GtkWidget *
+GtkWidget *
 gtk_widget_common_ancestor (GtkWidget *widget_a,
 			    GtkWidget *widget_b)
 {
