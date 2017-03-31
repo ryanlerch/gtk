@@ -6904,6 +6904,28 @@ event_window_is_still_viewable (GdkEvent *event)
     }
 }
 
+static void
+translate_coordinates (GdkEvent  *event,
+                       GtkWidget *widget)
+{
+  GtkWidget *event_widget;
+  gdouble xd, yd;
+  gint x, y;
+
+  if (!gdk_event_get_coords (event, &xd, &yd))
+    return;
+  if (!widget->priv->event_controllers)
+    return;
+  event_widget = gtk_get_event_widget (event);
+
+  /* FIXME: loses precision */
+  x = xd;
+  y = yd;
+  gtk_widget_translate_coordinates (event_widget, widget,
+                                    x, y, &x, &y);
+  gdk_event_set_coords (event, x, y);
+}
+
 static gint
 gtk_widget_event_internal (GtkWidget *widget,
 			   GdkEvent  *event)
@@ -6917,6 +6939,8 @@ gtk_widget_event_internal (GtkWidget *widget,
    */
   if (!event_window_is_still_viewable (event))
     return TRUE;
+
+  translate_coordinates (event, widget);
 
   g_object_ref (widget);
 
