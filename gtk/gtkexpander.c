@@ -143,7 +143,6 @@ enum
 struct _GtkExpanderPrivate
 {
   GtkWidget        *label_widget;
-  GdkWindow        *event_window;
 
   GtkCssGadget     *gadget;
   GtkCssGadget     *title_gadget;
@@ -160,6 +159,7 @@ struct _GtkExpanderPrivate
   guint             prelight        : 1;
   guint             label_fill      : 1;
   guint             resize_toplevel : 1;
+  guint             pressed_in_title : 1;
 };
 
 static void gtk_expander_set_property (GObject          *object,
@@ -172,8 +172,6 @@ static void gtk_expander_get_property (GObject          *object,
                                        GParamSpec       *pspec);
 
 static void     gtk_expander_destroy        (GtkWidget        *widget);
-static void     gtk_expander_realize        (GtkWidget        *widget);
-static void     gtk_expander_unrealize      (GtkWidget        *widget);
 static void     gtk_expander_size_allocate  (GtkWidget        *widget,
                                              GtkAllocation    *allocation);
 static void     gtk_expander_map            (GtkWidget        *widget);
@@ -230,6 +228,11 @@ static void gtk_expander_direction_changed   (GtkWidget        *widget,
                                               GtkTextDirection  previous_direction);
 
 /* Gestures */
+static void     gesture_multipress_pressed_cb  (GtkGestureMultiPress *gesture,
+                                                gint                  n_press,
+                                                gdouble               x,
+                                                gdouble               y,
+                                                GtkExpander          *expander);
 static void     gesture_multipress_released_cb (GtkGestureMultiPress *gesture,
                                                 gint                  n_press,
                                                 gdouble               x,
@@ -256,8 +259,6 @@ gtk_expander_class_init (GtkExpanderClass *klass)
   gobject_class->get_property = gtk_expander_get_property;
 
   widget_class->destroy              = gtk_expander_destroy;
-  widget_class->realize              = gtk_expander_realize;
-  widget_class->unrealize            = gtk_expander_unrealize;
   widget_class->size_allocate        = gtk_expander_size_allocate;
   widget_class->map                  = gtk_expander_map;
   widget_class->unmap                = gtk_expander_unmap;
@@ -366,7 +367,6 @@ gtk_expander_init (GtkExpander *expander)
   gtk_widget_set_has_window (GTK_WIDGET (expander), FALSE);
 
   priv->label_widget = NULL;
-  priv->event_window = NULL;
   priv->spacing = 0;
 
   priv->expanded = FALSE;
@@ -404,6 +404,8 @@ gtk_expander_init (GtkExpander *expander)
                                  GDK_BUTTON_PRIMARY);
   gtk_gesture_single_set_touch_only (GTK_GESTURE_SINGLE (priv->multipress_gesture),
                                      FALSE);
+  g_signal_connect (priv->multipress_gesture, "pressed",
+                    G_CALLBACK (gesture_multipress_pressed_cb), expander);
   g_signal_connect (priv->multipress_gesture, "released",
                     G_CALLBACK (gesture_multipress_released_cb), expander);
   gtk_event_controller_set_propagation_phase (GTK_EVENT_CONTROLLER (priv->multipress_gesture),
@@ -528,39 +530,6 @@ gtk_expander_destroy (GtkWidget *widget)
 }
 
 static void
-gtk_expander_realize (GtkWidget *widget)
-{
-  GtkAllocation allocation;
-  GtkExpanderPrivate *priv;
-
-  priv = GTK_EXPANDER (widget)->priv;
-
-  GTK_WIDGET_CLASS (gtk_expander_parent_class)->realize (widget);
-
-  gtk_widget_get_allocation (widget, &allocation);
-
-  priv->event_window = gdk_window_new_input (gtk_widget_get_window (widget),
-                                             GDK_ALL_EVENTS_MASK,
-                                             &allocation);
-  gtk_widget_register_window (widget, priv->event_window);
-}
-
-static void
-gtk_expander_unrealize (GtkWidget *widget)
-{
-  GtkExpanderPrivate *priv = GTK_EXPANDER (widget)->priv;
-
-  if (priv->event_window)
-    {
-      gtk_widget_unregister_window (widget, priv->event_window);
-      gdk_window_destroy (priv->event_window);
-      priv->event_window = NULL;
-    }
-
-  GTK_WIDGET_CLASS (gtk_expander_parent_class)->unrealize (widget);
-}
-
-static void
 gtk_expander_size_allocate (GtkWidget     *widget,
                             GtkAllocation *allocation)
 {
@@ -575,16 +544,6 @@ gtk_expander_size_allocate (GtkWidget     *widget,
                            &clip);
 
   gtk_widget_set_clip (widget, &clip);
-
-  if (gtk_widget_get_realized (widget))
-    {
-      GtkAllocation title_allocation;
-
-      gtk_css_gadget_get_border_allocation (priv->title_gadget, &title_allocation, NULL);
-      gdk_window_move_resize (priv->event_window,
-                              title_allocation.x, title_allocation.y,
-                              title_allocation.width, title_allocation.height);
-    }
 }
 
 static void
@@ -596,18 +555,12 @@ gtk_expander_map (GtkWidget *widget)
     gtk_widget_map (priv->label_widget);
 
   GTK_WIDGET_CLASS (gtk_expander_parent_class)->map (widget);
-
-  if (priv->event_window)
-    gdk_window_show (priv->event_window);
 }
 
 static void
 gtk_expander_unmap (GtkWidget *widget)
 {
   GtkExpanderPrivate *priv = GTK_EXPANDER (widget)->priv;
-
-  if (priv->event_window)
-    gdk_window_hide (priv->event_window);
 
   GTK_WIDGET_CLASS (gtk_expander_parent_class)->unmap (widget);
 
@@ -623,13 +576,38 @@ gtk_expander_snapshot (GtkWidget   *widget,
 }
 
 static void
+gesture_multipress_pressed_cb (GtkGestureMultiPress *gesture,
+                               gint                  n_press,
+                               gdouble               x,
+                               gdouble               y,
+                               GtkExpander          *expander)
+{
+  GtkExpanderPrivate *priv = expander->priv;
+  GtkAllocation title_allocation, allocation;
+
+  gtk_widget_get_allocation (GTK_WIDGET (expander), &allocation);
+  gtk_css_gadget_get_border_allocation (priv->title_gadget, &title_allocation,
+                                        NULL);
+  /* Coordinates are in the widget coordinate system, so transform
+   * the title_allocation to it.
+   */
+  title_allocation.x -= allocation.x;
+  title_allocation.y -= allocation.y;
+
+  priv->pressed_in_title = (x >= title_allocation.x &&
+                            x < title_allocation.x + title_allocation.width &&
+                            y >= title_allocation.y &&
+                            y < title_allocation.y + title_allocation.height);
+}
+
+static void
 gesture_multipress_released_cb (GtkGestureMultiPress *gesture,
                                 gint                  n_press,
                                 gdouble               x,
                                 gdouble               y,
                                 GtkExpander          *expander)
 {
-  if (expander->priv->prelight)
+  if (expander->priv->pressed_in_title)
     gtk_widget_activate (GTK_WIDGET (expander));
 }
 
@@ -692,18 +670,14 @@ gtk_expander_enter_notify (GtkWidget        *widget,
 {
   GtkExpander *expander = GTK_EXPANDER (widget);
 
-  if (event->window == expander->priv->event_window &&
-      event->detail != GDK_NOTIFY_INFERIOR)
-    {
-      expander->priv->prelight = TRUE;
+  expander->priv->prelight = TRUE;
 
-      update_node_state (expander);
+  update_node_state (expander);
 
-      if (expander->priv->label_widget)
-        gtk_widget_set_state_flags (expander->priv->label_widget,
-                                    GTK_STATE_FLAG_PRELIGHT,
-                                    FALSE);
-    }
+  if (expander->priv->label_widget)
+    gtk_widget_set_state_flags (expander->priv->label_widget,
+                                GTK_STATE_FLAG_PRELIGHT,
+                                FALSE);
 
   return FALSE;
 }
@@ -714,17 +688,13 @@ gtk_expander_leave_notify (GtkWidget        *widget,
 {
   GtkExpander *expander = GTK_EXPANDER (widget);
 
-  if (event->window == expander->priv->event_window &&
-      event->detail != GDK_NOTIFY_INFERIOR)
-    {
-      expander->priv->prelight = FALSE;
+  expander->priv->prelight = FALSE;
 
-      update_node_state (expander);
+  update_node_state (expander);
 
-      if (expander->priv->label_widget)
-        gtk_widget_unset_state_flags (expander->priv->label_widget,
-                                      GTK_STATE_FLAG_PRELIGHT);
-    }
+  if (expander->priv->label_widget)
+    gtk_widget_unset_state_flags (expander->priv->label_widget,
+                                  GTK_STATE_FLAG_PRELIGHT);
 
   return FALSE;
 }
